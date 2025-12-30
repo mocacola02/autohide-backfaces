@@ -23,10 +23,9 @@ from mathutils import Vector
 # -----------------------------
 # Globals
 # -----------------------------
-# Cache to track hidden faces per object to avoid redundant updates
 _hidden_faces_cache = {}
-# Timer interval in seconds for modal operator updates
 _timer_interval = 0.05
+_prev_edit_objects = set()  # Tracks objects with backface hide enabled
 
 # -----------------------------
 # Utilities
@@ -112,6 +111,11 @@ class VIEW3D_OT_auto_hide_backface_modal(bpy.types.Operator):
             self.cancel(context)
             return {'CANCELLED'}
 
+        # Auto-disable if not in Edit mode
+        if context.mode != 'EDIT_MESH':
+            context.scene.auto_hide_backfaces_enabled = False
+            return {'CANCELLED'}
+
         # Update hidden faces on timer events
         if event.type == 'TIMER':
             for obj in context.editable_objects:
@@ -126,7 +130,6 @@ class VIEW3D_OT_auto_hide_backface_modal(bpy.types.Operator):
     def execute(self, context):
         wm = context.window_manager
         # Add a repeating timer
-        # I'm not really a big fan of this timer setup, I need to learn more about Blender to implement a more optimized approach
         self._timer = wm.event_timer_add(_timer_interval, window=context.window)
         wm.modal_handler_add(self)
         if context.scene.auto_hide_backfaces_debug:
@@ -166,15 +169,38 @@ class VIEW3D_PT_auto_hide_backface_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        # Checkbox to enable/disable auto hide
-        layout.prop(context.scene, "auto_hide_backfaces_enabled")
+        # Grayed-out checkbox if not in edit mode
+        row = layout.row()
+        row.enabled = (context.mode == 'EDIT_MESH')
+        row.prop(context.scene, "auto_hide_backfaces_enabled")
         # Checkbox to enable debug print statements
         layout.prop(context.scene, "auto_hide_backfaces_debug")
 
+# -----------------------------
 # Callback to start modal when enabling feature
+# -----------------------------
 def toggle_modal(self, context):
     if context.scene.auto_hide_backfaces_enabled:
+        # Only start in edit mode
+        if context.mode != 'EDIT_MESH':
+            context.scene.auto_hide_backfaces_enabled = False
+            return
         bpy.ops.view3d.auto_hide_backface_modal('INVOKE_DEFAULT')
+
+# -----------------------------
+# Track objects returning to edit mode
+# -----------------------------
+def track_edit_mode(scene):
+    """Automatically re-enable backface hiding on objects returning to edit mode."""
+    current_edit_objects = {obj.name for obj in bpy.context.selected_editable_objects if obj.type == 'MESH'}
+    for obj_name in current_edit_objects:
+        if obj_name in _prev_edit_objects:
+            continue  # Already enabled
+        # Enable modal if user had it previously on this object
+        if scene.auto_hide_backfaces_enabled and obj_name not in _hidden_faces_cache:
+            _prev_edit_objects.add(obj_name)
+    # Remove objects no longer in edit mode
+    _prev_edit_objects.intersection_update(current_edit_objects)
 
 # -----------------------------
 # Registration
@@ -191,6 +217,8 @@ def register():
         name="Enable Debug Printing",
         default=False
     )
+    # Add edit-mode tracking handler
+    bpy.app.handlers.depsgraph_update_post.append(track_edit_mode)
 
     # Register operator and panel
     bpy.utils.register_class(VIEW3D_OT_auto_hide_backface_modal)
@@ -204,6 +232,10 @@ def unregister():
     # Remove scene properties
     del bpy.types.Scene.auto_hide_backfaces_enabled
     del bpy.types.Scene.auto_hide_backfaces_debug
+
+    # Remove edit-mode handler
+    if track_edit_mode in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(track_edit_mode)
 
 # Run script
 if __name__ == "__main__":
