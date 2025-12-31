@@ -41,7 +41,7 @@ def get_view_direction(context):
     return None, None
 
 def update_backfaces(obj, context, debug=False):
-    """Hide/show faces depending on view direction."""
+    """Hide/show faces depending on view direction or if in front of camera."""
     # Only operate on active object in edit mode
     if context.mode != 'EDIT_MESH' or obj is None or obj != context.object:
         return
@@ -53,14 +53,35 @@ def update_backfaces(obj, context, debug=False):
     if view_dir is None:
         return
 
+    cam_pos = rv3d.view_matrix.inverted().translation  # Camera position in world space
     normal_matrix = obj.matrix_world.to_3x3()
     hidden_faces = _hidden_faces_cache.get(obj.name, set())
     new_hidden = set()
     changed = False
 
+    # Add a scene property:
+    bpy.types.Scene.auto_hide_backfaces_flip = bpy.props.BoolProperty(
+        name="Hide Inner Normals",
+        default=True,
+        description="Invert which faces are considered 'backfaces'"
+    )
+
+    # In update_backfaces():
     for face in bm.faces:
         face_world_normal = normal_matrix @ face.normal
-        is_backface = face_world_normal.dot(view_dir) > 0
+        face_center = obj.matrix_world @ face.calc_center_median()
+
+        # Vector from face to camera
+        face_to_cam = (cam_pos - face_center).normalized()
+        # Determine if the face is facing the camera
+        is_facing_camera = face_world_normal.dot(face_to_cam) > 0
+
+        # Apply flip mode
+        if context.scene.auto_hide_backfaces_flip:
+            is_backface = not is_facing_camera
+        else:
+            is_backface = is_facing_camera
+
         if is_backface and not face.hide:
             face.hide = True
             new_hidden.add(face.index)
@@ -146,7 +167,7 @@ class VIEW3D_OT_auto_hide_backface_modal(bpy.types.Operator):
 # UI Panel
 # -----------------------------
 class VIEW3D_PT_auto_hide_backface_panel(bpy.types.Panel):
-    bl_label = "Continuous Backface Hide"
+    bl_label = "Auto-Hide Backface"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'Tool'
@@ -158,6 +179,7 @@ class VIEW3D_PT_auto_hide_backface_panel(bpy.types.Panel):
         row.enabled = (context.mode == 'EDIT_MESH')
         row.prop(context.scene, "auto_hide_backfaces_enabled")
         layout.prop(context.scene, "auto_hide_backfaces_debug")
+        layout.prop(context.scene, "auto_hide_backfaces_flip")
 
 # -----------------------------
 # Callback to start modal when enabling feature
